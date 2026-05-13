@@ -1,0 +1,6 @@
+[submodule "backend"]
+	path = backend
+	url = https://github.com/juanes16122002/control-de-turnos-backend.git
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/juanes16122002/control-de-turnos-front.git
