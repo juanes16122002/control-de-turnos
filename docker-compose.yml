@@ -3,13 +3,18 @@ services:
     image: postgres:16-alpine
     container_name: turnos-db
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=REDACTED
-      - POSTGRES_DB=turnos
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatoria. Define las variables en un archivo .env (ver .env.example)}
+      - POSTGRES_DB=${POSTGRES_DB:-turnos}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-turnos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build: ./backend
@@ -17,15 +22,21 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - JWT_SECRET=${JWT_SECRET:-REDACTED}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET es obligatoria. Define las variables en un archivo .env (ver .env.example)}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-8h}
       - ADMIN_USER=${ADMIN_USER:-admin}
-      - ADMIN_PASS=${ADMIN_PASS:-REDACTED}
+      - ADMIN_PASS=${ADMIN_PASS:?ADMIN_PASS es obligatoria. Define las variables en un archivo .env (ver .env.example)}
       - PORT=5000
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/turnos
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-turnos}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build:
