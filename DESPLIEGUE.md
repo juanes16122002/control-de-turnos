@@ -92,9 +92,15 @@ curl https://control-de-turnos-backend.onrender.com/
 - Cada *workspace* de Render tiene **750 h/mes** de instancias gratuitas, **compartidas** con
   `contabilidad-backend` (también gratuito). Si se agotan, Render suspende ambos servicios hasta el
   mes siguiente. Revisar el consumo en *Render → Billing*.
-- Opcional: `backend/.github/workflows/mantener-activo.yml` (pendiente de activar) consulta el
-  backend cada 10 min en un horario definido, a costa de horas gratuitas. Requiere la variable de
-  repositorio `BACKEND_URL` y que `gh` tenga el permiso `workflow` para subirlo.
+- **Mantener despierto en horario de operación:** `backend/.github/workflows/mantener-activo.yml`
+  consulta el backend cada 10 min **solo de 9:00 a 2:59 hora de Chile** (~558 h/mes; deja ~190 h
+  para `contabilidad-backend`). Fuera de ese horario la primera petición tarda ~1 min.
+  - Variables del repo backend (*Settings → Secrets and variables → Actions → Variables*):
+    `BACKEND_URL` (configurada), `KEEPALIVE_INICIO` / `KEEPALIVE_FIN` (opcionales, por defecto 9 y 3).
+  - **Empieza a funcionar al fusionar el PR del backend**: GitHub solo ejecuta tareas programadas
+    desde `main`. Se puede lanzar a mano en *Actions → Mantener backend activo → Run workflow*.
+  - GitHub desactiva las tareas programadas de repos públicos tras 60 días sin actividad;
+    reactivarla desde la pestaña *Actions* si ocurre.
 - Para eliminar el apagado: plan pago de Render (desde ~US$7/mes por servicio).
 
 ---
@@ -171,7 +177,7 @@ En https://control-de-turnos-mu.vercel.app:
 - [ ] Fusionar los PRs y pasar Render a la rama `main` (§1).
 - [ ] Revocar la API key de Render usada para el despliegue inicial (*Account Settings → API Keys*).
 - [ ] Verificación SSL del certificado de Supabase (§2.2).
-- [ ] Decidir si se activa el *keep-alive* y en qué horario (§2.3).
+- [x] *Keep-alive* en horario de operación 9:00–3:00 (§2.3) — activo tras fusionar el PR del backend.
 - [ ] Revisar respaldos de Supabase.
 - [ ] Desarrollo local: `backend/.env` apunta a Supabase (producción); para desarrollar sin tocar
       datos reales: `docker compose -f docker-compose.yml -f docker-compose.local-db.yml up`.
