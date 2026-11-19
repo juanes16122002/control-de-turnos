@@ -20,24 +20,18 @@
    repo: control-de-turnos-front         repo: control-de-turnos-backend
 ```
 
-> **Despliegues automáticos:** Vercel está conectado al repo `control-de-turnos-front` (rama de
-> producción `main`). Render despliega el repo `control-de-turnos-backend` desde la rama
-> configurada en el servicio (hoy `feature/asistencia`; pasar a `main` al fusionar, ver §1).
+> **Despliegues automáticos desde `main`:** Vercel (repo `control-de-turnos-front`) y Render
+> (repo `control-de-turnos-backend`) publican solos cada cambio que llega a `main`. Para cambios
+> nuevos: rama → Pull Request → fusionar en `main`.
 
 ---
 
-## 1. Al fusionar los Pull Requests
+## 1. Flujo de cambios
 
-Orden: **backend → frontend → repo principal**, en los submódulos con **"Create a merge commit"**
-(no squash/rebase: el repo principal apunta a esos commits exactos).
-
-Después de fusionar:
-
-1. **Render → servicio `control-de-turnos-backend` → Settings → Build & Deploy → Branch:** cambiar
-   `feature/asistencia` por **`main`** (o pedirlo al asistente con la API key de Render).
-2. **Vercel** despliega `main` automáticamente; comprobar en *Deployments* que el último despliegue
-   de producción viene de `main`.
-3. Borrar las ramas `feature/asistencia` desde los PRs si se desea.
+- Cambios en backend o frontend: rama → PR en su repo → fusionar en `main` → despliegue automático.
+- Si el cambio toca ambos, fusionar **primero los submódulos** (con **"Create a merge commit"**) y
+  luego actualizar los punteros en el repo principal.
+- La versión inicial se fusionó el 19-11-2026 (PRs #1 de los tres repos) y Render se pasó a `main`.
 
 ---
 
@@ -97,8 +91,8 @@ curl https://control-de-turnos-backend.onrender.com/
   para `contabilidad-backend`). Fuera de ese horario la primera petición tarda ~1 min.
   - Variables del repo backend (*Settings → Secrets and variables → Actions → Variables*):
     `BACKEND_URL` (configurada), `KEEPALIVE_INICIO` / `KEEPALIVE_FIN` (opcionales, por defecto 9 y 3).
-  - **Empieza a funcionar al fusionar el PR del backend**: GitHub solo ejecuta tareas programadas
-    desde `main`. Se puede lanzar a mano en *Actions → Mantener backend activo → Run workflow*.
+  - Activa desde el 19-11-2026 (rama `main`). Se puede lanzar a mano en
+    *Actions → Mantener backend activo → Run workflow*.
   - GitHub desactiva las tareas programadas de repos públicos tras 60 días sin actividad;
     reactivarla desde la pestaña *Actions* si ocurre.
 - Para eliminar el apagado: plan pago de Render (desde ~US$7/mes por servicio).
@@ -174,10 +168,10 @@ En https://control-de-turnos-mu.vercel.app:
 
 ## 8. Pendientes y recomendaciones
 
-- [ ] Fusionar los PRs y pasar Render a la rama `main` (§1).
+- [x] PRs fusionados y Render desplegando desde `main` (19-11-2026).
 - [ ] Revocar la API key de Render usada para el despliegue inicial (*Account Settings → API Keys*).
 - [ ] Verificación SSL del certificado de Supabase (§2.2).
-- [x] *Keep-alive* en horario de operación 9:00–3:00 (§2.3) — activo tras fusionar el PR del backend.
+- [x] *Keep-alive* en horario de operación 9:00–3:00 (§2.3) — activo y verificado en GitHub Actions.
 - [ ] Revisar respaldos de Supabase.
 - [ ] Desarrollo local: `backend/.env` apunta a Supabase (producción); para desarrollar sin tocar
       datos reales: `docker compose -f docker-compose.yml -f docker-compose.local-db.yml up`.
