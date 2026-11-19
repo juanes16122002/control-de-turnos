@@ -1,262 +1,205 @@
 # Guía de despliegue — Basel Venue · Control de turnos
 
-Esta guía cubre el despliegue de la versión que incluye: módulo de asistencia (kiosco con PIN,
-geolocalización y código QR), base de datos en Supabase, identidad visual de Basel Venue,
-endurecimiento de seguridad, nueva política de sesiones y diseño responsivo.
+## Estado actual (19-11-2026)
 
-## Arquitectura
+| Pieza | Servicio | URL / identificador |
+|---|---|---|
+| Frontend | **Vercel** · equipo `dev-craft` · proyecto `control-de-turnos` | https://control-de-turnos-mu.vercel.app |
+| Kiosco (trabajadores) | — | https://control-de-turnos-mu.vercel.app/asistencia |
+| Backend | **Render** · plan gratuito · Oregón · servicio `control-de-turnos-backend` (`srv-dbv4lsk9v7es738lq3tg`) | https://control-de-turnos-backend.onrender.com |
+| Base de datos | **Supabase** (PostgreSQL 17) · Session pooler `aws-1-us-west-2` | — |
 
 ```
  Celular / tablet / PC
           │  https
           ▼
  ┌─────────────────────┐  https (API)  ┌──────────────────────┐  SSL (pooler)  ┌─────────────┐
- │ Vercel — frontend   │ ────────────▶ │ Railway — backend    │ ─────────────▶ │  Supabase   │
+ │ Vercel — frontend   │ ────────────▶ │ Render — backend     │ ─────────────▶ │  Supabase   │
  │ React (build)       │               │ Express (Docker)     │               │ PostgreSQL  │
  └─────────────────────┘               └──────────────────────┘               └─────────────┘
    repo: control-de-turnos-front         repo: control-de-turnos-backend
 ```
 
-El repo `control-de-turnos` agrupa ambos como submódulos (`frontend/`, `backend/`) y contiene
-`docker-compose.yml` para correr todo localmente.
-
-> **Orden obligatorio:** 1) base de datos → 2) backend → 3) frontend. El frontend necesita la URL
-> del backend en el momento del build, y el backend necesita la URL del frontend para CORS.
+> **Despliegues automáticos:** Vercel está conectado al repo `control-de-turnos-front` (rama de
+> producción `main`). Render despliega el repo `control-de-turnos-backend` desde la rama
+> configurada en el servicio (hoy `feature/asistencia`; pasar a `main` al fusionar, ver §1).
 
 ---
 
-## 0. Antes de empezar
+## 1. Al fusionar los Pull Requests
 
-- [ ] Acceso a las cuentas de **GitHub**, **Supabase**, **Railway** y **Vercel**.
-- [ ] La base de datos ya fue migrada a Supabase (18-11-2026). Si partes de cero, ver el
-      [Anexo A](#anexo-a-migrar-datos-a-una-base-nueva).
-- [ ] Ten a mano: la cadena de conexión del **Session pooler** de Supabase y las URLs públicas de
-      Railway y Vercel (si aún no existen, se obtienen en los pasos 2 y 3).
+Orden: **backend → frontend → repo principal**, en los submódulos con **"Create a merge commit"**
+(no squash/rebase: el repo principal apunta a esos commits exactos).
 
-## 1. Subir el código
+Después de fusionar:
 
-Los cambios están en la rama `feature/asistencia` de los tres repos. Se integran a `main`
-**primero en los submódulos y al final en el repo principal** (que apunta a commits de ellos):
-
-```bash
-# 1) Backend
-cd backend
-git push -u origin feature/asistencia
-#    → abrir Pull Request feature/asistencia → main en GitHub, revisar y fusionar
-
-# 2) Frontend
-cd ../frontend
-git push -u origin feature/asistencia
-#    → abrir y fusionar el Pull Request
-
-# 3) Repo principal (actualiza los punteros de los submódulos)
-cd ..
-git push -u origin feature/asistencia
-#    → abrir y fusionar el Pull Request
-```
-
-> Si Railway y Vercel despliegan automáticamente desde `main`, **el despliegue arranca al fusionar**.
-> Deja configuradas las variables de los pasos 2 y 3 **antes** de fusionar.
+1. **Render → servicio `control-de-turnos-backend` → Settings → Build & Deploy → Branch:** cambiar
+   `feature/asistencia` por **`main`** (o pedirlo al asistente con la API key de Render).
+2. **Vercel** despliega `main` automáticamente; comprobar en *Deployments* que el último despliegue
+   de producción viene de `main`.
+3. Borrar las ramas `feature/asistencia` desde los PRs si se desea.
 
 ---
 
-## 2. Backend en Railway
+## 2. Backend en Render
 
-### 2.1 Servicio
+### Servicio
+- Tipo *Web Service*, runtime **Docker** (`Dockerfile` del repo), plan **Free**, región **Oregon**,
+  health check `/`. Definición equivalente como código: `backend/render.yaml`.
+- Render asigna el puerto (`PORT=10000`); no definirlo.
 
-El servicio debe estar conectado al repo **`control-de-turnos-backend`**, rama `main`.
-Railway usa el `Dockerfile` automáticamente (`railway.json`). El puerto lo asigna Railway
-(variable `PORT`); **no la definas**.
+### Variables de entorno (Render → servicio → Environment)
 
-### 2.2 Variables de entorno
+| Variable | Valor |
+|---|---|
+| `DATABASE_URL` | Supabase → **Connect → Session pooler** (puerto 5432) |
+| `JWT_SECRET` | Aleatorio, exclusivo de producción (ya generado; no reutilizar el de desarrollo) |
+| `ADMIN_USER` / `ADMIN_PASS` | Credenciales del administrador |
+| `CORS_ORIGIN` | `https://control-de-turnos-mu.vercel.app` (exacta, sin `/` final) |
+| `JWT_EXPIRES_IN` | `15m` |
+| `REFRESH_IDLE_HOURS` / `SESSION_MAX_DAYS` | `12` / `7` |
+| `DB_POOL_MAX` | `5` |
+| `DB_SSL` / `DB_SSL_CA` | *(recomendado, ver §2.2)* |
 
-En *Railway → servicio → Variables*:
+`TRUST_PROXY` **no se define**: el backend detecta Render y usa la cabecera `CF-Connecting-IP` de
+Cloudflare como IP real del cliente para los límites de intentos (verificado: Cloudflare rechaza
+esa cabecera si la envía el cliente, y falsificar `X-Forwarded-For` no evade el límite).
 
-| Variable | Valor | Obligatoria |
-|---|---|---|
-| `DATABASE_URL` | Supabase → **Connect → Session pooler** (puerto **5432**). Ej.: `postgresql://postgres.<ref>:<contraseña>@aws-1-<región>.pooler.supabase.com:5432/postgres` | Sí |
-| `JWT_SECRET` | Cadena aleatoria larga (ver abajo). **Nunca** reutilices la de desarrollo. | Sí |
-| `ADMIN_USER` | Usuario del administrador (ej. `admin`). | Sí |
-| `ADMIN_PASS` | Contraseña **larga y única** (16+ caracteres). | Sí |
-| `CORS_ORIGIN` | URL exacta del frontend en Vercel, **sin `/` final**. Ej.: `https://control-turnos.vercel.app` | Sí |
-| `JWT_EXPIRES_IN` | `15m` — **si existe con `8h`, cámbiala o bórrala** (tiene prioridad sobre el código). | Recomendada |
-| `REFRESH_IDLE_HOURS` | `12` (horas de inactividad antes de pedir login). | Opcional |
-| `SESSION_MAX_DAYS` | `7` (duración máxima de una sesión). | Opcional |
-| `DB_POOL_MAX` | `10` (conexiones máximas a Supabase). | Opcional |
-| `DB_SSL` / `DB_SSL_CA` | Verificación del certificado de Supabase (ver 2.4). | Recomendada |
-| `TRUST_PROXY` | **No definir**: se detecta automáticamente en Railway (= 1). | No |
+> ⚠️ **Errores frecuentes con `DATABASE_URL`:** reemplazar `[YOUR-PASSWORD]` **incluidos los
+> corchetes**; codificar `@ # / ? : %` en la contraseña; no usar la conexión *Direct* (IPv6).
 
-Generar `JWT_SECRET`:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+### 2.1 Verificar
+En *Logs* deben aparecer:
 ```
-
-> ⚠️ **Errores frecuentes con `DATABASE_URL`:**
-> - La plantilla de Supabase trae `[YOUR-PASSWORD]`: hay que reemplazar **también los corchetes**.
-> - Si la contraseña tiene `@ # / ? : %`, debe ir codificada (`@` → `%40`, `#` → `%23`, …).
-> - No uses la conexión **Direct** (`db.<ref>.supabase.co`): es solo IPv6 y falla desde Railway.
-
-### 2.3 Desplegar y verificar
-
-Tras el despliegue, en *Deploy Logs* deben aparecer:
-
-```
-Base de datos inicializada (Supabase aws-1-...pooler.supabase.com:5432, SSL: require)
-Servidor iniciado en puerto ...
+Base de datos inicializada (Supabase aws-1-us-west-2.pooler.supabase.com:5432, SSL: require)
 Proxies de confianza (trust proxy): 1
+CORS origin: https://control-de-turnos-mu.vercel.app
 ```
-
-Comprobación rápida (reemplaza la URL):
-
 ```bash
-curl https://TU-BACKEND.up.railway.app/
+curl https://control-de-turnos-backend.onrender.com/
 # → {"message":"API de Registro de Horarios","version":"1.0.0"}
 ```
 
-> Al arrancar, el backend **actualiza el esquema solo** (columnas de asistencia/ubicación, tabla de
-> configuración, sesiones con hash, RLS). Todos los cambios son **aditivos**; no se pierden datos.
-> Las sesiones abiertas del formato anterior se invalidan: **el admin deberá iniciar sesión otra vez**.
-
-### 2.4 (Recomendado) Verificar el certificado SSL de Supabase
-
-Por defecto la conexión va cifrada pero sin verificar el certificado (el log lo advierte). Para
-verificarlo:
-
+### 2.2 (Recomendado) Verificar el certificado SSL de Supabase
 1. Supabase → *Project Settings → Database → SSL Configuration* → **Download certificate**.
-2. Convierte el archivo a una sola línea con `\n`:
-   ```bash
-   node -e "console.log(require('fs').readFileSync('prod-ca-2021.crt','utf8').trim().replace(/\n/g,'\\\\n'))"
-   ```
-3. En Railway: `DB_SSL=verify` y `DB_SSL_CA=<la línea obtenida>`. Redespliega.
-4. El log debe decir `SSL: verify` y desaparece la advertencia.
+2. Convertir a una sola línea:
+   `node -e "console.log(require('fs').readFileSync('prod-ca-2021.crt','utf8').trim().replace(/\n/g,'\\\\n'))"`
+3. En Render: `DB_SSL=verify` y `DB_SSL_CA=<la línea>`. El log debe decir `SSL: verify`.
+
+### 2.3 Plan gratuito: apagado por inactividad
+- El servicio **se apaga tras 15 min sin tráfico** y tarda **~1 min** en volver. El kiosco lo
+  tolera: espera hasta 75 s y muestra *"Iniciando el servidor, puede tardar hasta un minuto…"*.
+- Cada *workspace* de Render tiene **750 h/mes** de instancias gratuitas, **compartidas** con
+  `contabilidad-backend` (también gratuito). Si se agotan, Render suspende ambos servicios hasta el
+  mes siguiente. Revisar el consumo en *Render → Billing*.
+- Opcional: `backend/.github/workflows/mantener-activo.yml` (pendiente de activar) consulta el
+  backend cada 10 min en un horario definido, a costa de horas gratuitas. Requiere la variable de
+  repositorio `BACKEND_URL` y que `gh` tenga el permiso `workflow` para subirlo.
+- Para eliminar el apagado: plan pago de Render (desde ~US$7/mes por servicio).
 
 ---
 
 ## 3. Frontend en Vercel
 
-### 3.1 Proyecto
+- Proyecto `control-de-turnos` (equipo `dev-craft`), conectado a `control-de-turnos-front`.
+  Framework *Create React App*; usa `frontend/vercel.json` (rutas del SPA + cabeceras de seguridad).
+- Variable **`REACT_APP_API_URL`** = `https://control-de-turnos-backend.onrender.com`
+  (Production y Preview). Es de **build**: si cambia, redesplegar.
+- `frontend/.env.production` fija `INLINE_RUNTIME_CHUNK=false` (necesario para la CSP).
 
-- **Root Directory:** `frontend` (*Project Settings → Build and Deployment → Root Directory*).
-  Así Vercel usa `frontend/vercel.json` (rutas del SPA + cabeceras de seguridad).
-- Framework: *Create React App* · Build: `npm run build` · Output: `build`.
-- Si el proyecto está conectado al repo principal (`control-de-turnos`), los submódulos deben ser
-  accesibles para Vercel (repos públicos o con acceso concedido).
-
-### 3.2 Variable de entorno
-
-| Variable | Valor |
-|---|---|
-| `REACT_APP_API_URL` | URL pública del backend en Railway, **sin `/` final**. Ej.: `https://TU-BACKEND.up.railway.app` |
-
-> Es una variable **de build**: si la cambias, hay que **redesplegar** para que tome efecto.
-
-### 3.3 Verificar
-
+Verificar:
 ```bash
-# Cabeceras de seguridad (deben aparecer las 5)
-curl -sI https://TU-FRONTEND.vercel.app/login | grep -iE "content-security|x-frame|permissions|referrer|nosniff"
-
-# Las rutas del SPA no deben dar 404 al recargar
-curl -s -o /dev/null -w "%{http_code}\n" https://TU-FRONTEND.vercel.app/asistencia   # → 200
+curl -sI https://control-de-turnos-mu.vercel.app/login | grep -iE "content-security|x-frame|permissions|referrer|nosniff"
+curl -s -o /dev/null -w "%{http_code}\n" https://control-de-turnos-mu.vercel.app/asistencia   # → 200
 ```
 
-Si faltan las cabeceras, el Root Directory no es `frontend` o el proyecto no está leyendo
-`frontend/vercel.json`.
-
-> Si cambia la URL de Vercel (dominio propio, etc.), actualiza `CORS_ORIGIN` en Railway.
+> Si se agrega un dominio propio, actualizar `CORS_ORIGIN` en Render y volver a imprimir el QR.
+> Revisar los términos del plan **Hobby** de Vercel: está pensado para uso personal/no comercial.
 
 ---
 
 ## 4. Puesta en marcha (una sola vez)
 
-En el sistema **publicado** (no en `localhost`):
+En https://control-de-turnos-mu.vercel.app:
 
-1. **Iniciar sesión** con `ADMIN_USER` / `ADMIN_PASS`.
-2. **Ubicación del local** — *Asistencia → Ubicación*:
-   - Desde un **celular dentro del local**, pulsa **Usar mi ubicación actual** y revisa el punto en
-     Google Maps.
-   - Radio sugerido: **150–200 m**. Usa **Probar desde este dispositivo** en distintos puntos del
-     local (entrada, bodega) y ajusta.
-   - Activa **Exigir ubicación para marcar** y **Guardar**.
-3. **PINs** — *Asistencia → PIN del kiosco*: asigna un PIN a cada trabajador y entrégaselo
-   (se muestra **una sola vez**).
-4. **Cartel QR** — *Asistencia → Código QR → Imprimir cartel* y pégalo en la entrada.
-   *(Generarlo desde el sistema publicado: si se genera en `localhost`, el QR no sirve.)*
-5. **Comunicar al personal** cómo marcar (escanear → nombre → PIN → Entrada/Salida), que deben
-   **permitir la ubicación** en el navegador y que la ubicación queda registrada al marcar.
-
----
+1. **Iniciar sesión** con `ADMIN_USER` / `ADMIN_PASS` (las sesiones anteriores se invalidaron).
+2. **Ubicación del local** — *Asistencia → Ubicación*: desde un **celular dentro del local**,
+   **Usar mi ubicación actual**, revisar en Google Maps, radio **150–200 m**, probar con
+   **Probar desde este dispositivo** en varios puntos, activar **Exigir ubicación** y **Guardar**.
+3. **PINs** — *Asistencia → PIN del kiosco*: asignar y entregar (se muestran una sola vez).
+4. **Cartel QR** — *Asistencia → Código QR → Imprimir cartel*; pegarlo en la entrada.
+5. **Comunicar al personal**: escanear → nombre → PIN → Entrada/Salida; permitir la ubicación;
+   la ubicación queda registrada al marcar.
 
 ## 5. Verificación final
 
 | # | Prueba | Resultado esperado |
 |---|---|---|
 | 1 | Abrir el panel desde un celular | Barra superior con menú ☰; sin desplazamiento lateral |
-| 2 | Escanear el QR con un celular **dentro** del local, marcar Entrada | "Entrada registrada… · a X m del local" |
-| 3 | Intentar marcar **fuera** del radio (p. ej. desde casa) | Rechazado: "Estás a X m del local" |
-| 4 | Ver *Asistencia → En turno ahora* | Aparece el trabajador con su hora de entrada |
-| 5 | Marcar Salida y *Convertir en turno* desde el historial | Se crea el turno con el sueldo calculado |
-| 6 | Abrir `https://TU-FRONTEND/dashboard` en una ventana privada | Redirige a `/login` sin mostrar el panel |
-| 7 | Dejar el panel abierto > 15 min y seguir usándolo | Sigue funcionando (renovación automática) |
-| 8 | Cerrar sesión con dos pestañas abiertas | Ambas vuelven a `/login` |
-
----
+| 2 | Escanear el QR **dentro** del local y marcar Entrada | "Entrada registrada… · a X m del local" |
+| 3 | Intentar marcar **fuera** del radio | "Estás a X m del local" |
+| 4 | *Asistencia → En turno ahora* | Aparece el trabajador |
+| 5 | Marcar Salida y *Convertir en turno* | Turno creado con sueldo calculado |
+| 6 | `/dashboard` en ventana privada | Redirige a `/login` sin mostrar el panel |
+| 7 | Panel abierto > 15 min | Sigue funcionando (renovación automática) |
+| 8 | Cerrar sesión con dos pestañas | Ambas vuelven a `/login` |
 
 ## 6. Si algo falla
 
 | Síntoma | Causa probable | Solución |
 |---|---|---|
-| El frontend no carga datos; en la consola: *CORS* | `CORS_ORIGIN` no coincide exactamente con la URL de Vercel | Corregir en Railway (sin `/` final, con `https://`) |
-| Consola: *Refused to connect … Content Security Policy* | `REACT_APP_API_URL` apunta a `http://` | Usar la URL `https://` de Railway y redesplegar |
-| `password authentication failed` en logs del backend | Contraseña con corchetes o caracteres sin codificar | Revisar `DATABASE_URL` (ver 2.2) |
-| `self-signed certificate in certificate chain` | `DB_SSL=verify` sin el CA correcto | Revisar `DB_SSL_CA` o quitar `DB_SSL` |
-| `ENETUNREACH` / timeout al conectar a la BD | Se usó la conexión *Direct* (IPv6) | Usar el **Session pooler** |
-| `too many connections` / `max clients reached` | Pool grande o varias instancias | Bajar `DB_POOL_MAX` |
-| El kiosco dice "La ubicación solo funciona en conexiones seguras" | Se abrió por `http://` | Abrir por `https://` |
-| "Permiso de ubicación denegado" en un celular | El trabajador rechazó el permiso | Ajustes del navegador → Ubicación → permitir para el sitio; recargar |
-| Todos son rechazados por "ubicación poco precisa" | Tablet/PC sin GPS (ubicación por red) | Usar celulares con GPS o subir "precisión mínima" en *Ubicación* |
-| El admin queda bloqueado en el login tras intentos fallidos de otros | `TRUST_PROXY` forzado a 0 | Quitar la variable `TRUST_PROXY` en Railway |
-| Al recargar `/asistencia` aparece 404 | Vercel no lee `frontend/vercel.json` | Root Directory = `frontend` (ver 3.1) |
+| Error de *CORS* en la consola | `CORS_ORIGIN` no coincide con la URL de Vercel | Corregir en Render (sin `/` final) |
+| *Refused to connect … Content Security Policy* | `REACT_APP_API_URL` con `http://` | Usar `https://` y redesplegar Vercel |
+| El kiosco tarda ~1 min la primera vez | Render gratuito despertando | Normal (§2.3) |
+| Ambos backends de Render suspendidos | Se agotaron las 750 h del mes | Esperar al mes siguiente o plan pago |
+| `password authentication failed` | Corchetes / caracteres sin codificar en `DATABASE_URL` | Ver §2 |
+| `self-signed certificate in certificate chain` | `DB_SSL=verify` sin el CA correcto | Revisar `DB_SSL_CA` |
+| `ENETUNREACH` al conectar a la BD | Conexión *Direct* (IPv6) | Usar Session pooler |
+| "La ubicación solo funciona en conexiones seguras" | Kiosco abierto por `http://` | Usar `https://` |
+| "Permiso de ubicación denegado" | El trabajador rechazó el permiso | Ajustes del navegador → Ubicación → permitir |
+| Todos rechazados por "ubicación poco precisa" | Equipos sin GPS | Celulares con GPS o subir la precisión mínima |
+| 404 al recargar `/asistencia` | Vercel no usa `frontend/vercel.json` | Revisar Root Directory del proyecto |
 
 ## 7. Volver a la versión anterior
 
 - **Frontend:** Vercel → *Deployments* → despliegue anterior → **Instant Rollback**.
-- **Backend:** Railway → *Deployments* → despliegue anterior → **Redeploy**.
-- **Base de datos:** no requiere acción. Los cambios de esquema son aditivos y compatibles con la
-  versión anterior; solo las sesiones abiertas se invalidan (re-login).
+- **Backend:** Render → *Events/Deploys* → despliegue anterior → **Rollback**.
+- **Base de datos:** sin acción; los cambios de esquema son aditivos y compatibles.
 
-## 8. Recomendaciones pendientes
+## 8. Pendientes y recomendaciones
 
-- Activar la verificación SSL (paso 2.4).
-- Revisar el plan de **respaldos** de Supabase y, si no incluye respaldos automáticos, programar
-  exportaciones periódicas.
-- Si habrá más de un administrador: cuentas individuales con roles y registro de cambios.
-- Desarrollo local: `backend/.env` apunta hoy a Supabase (producción). Para desarrollar sin tocar
-  datos reales usa `docker compose -f docker-compose.yml -f docker-compose.local-db.yml up`.
+- [ ] Fusionar los PRs y pasar Render a la rama `main` (§1).
+- [ ] Revocar la API key de Render usada para el despliegue inicial (*Account Settings → API Keys*).
+- [ ] Verificación SSL del certificado de Supabase (§2.2).
+- [ ] Decidir si se activa el *keep-alive* y en qué horario (§2.3).
+- [ ] Revisar respaldos de Supabase.
+- [ ] Desarrollo local: `backend/.env` apunta a Supabase (producción); para desarrollar sin tocar
+      datos reales: `docker compose -f docker-compose.yml -f docker-compose.local-db.yml up`.
 
 ---
 
-## Anexo A: migrar datos a una base nueva
+## Anexo A: crear el despliegue desde cero
 
-Si se crea otro proyecto de Supabase o hay que repetir la migración desde una base PostgreSQL:
+**Backend (Render):** *New → Blueprint* → repo `control-de-turnos-backend` (usa `render.yaml`), o
+*New → Web Service* → Docker, plan Free, región Oregon; cargar las variables de §2.
 
+**Frontend (Vercel):** *Add New → Project* → repo `control-de-turnos-front` → Create React App;
+`REACT_APP_API_URL` = URL del backend; desplegar. Luego poner la URL de Vercel en `CORS_ORIGIN`
+del backend.
+
+**Migrar datos a una base nueva:**
 ```bash
 cd backend
-# DATABASE_URL (en backend/.env) = base DESTINO (Supabase)
+# DATABASE_URL (backend/.env) = base DESTINO
 ORIGEN_DATABASE_URL="postgresql://usuario:clave@host:5432/base" npm run migrar:supabase -- --dry-run
 ORIGEN_DATABASE_URL="postgresql://usuario:clave@host:5432/base" npm run migrar:supabase
 ```
 
-El script crea el esquema, copia los datos conservando los IDs, ajusta las secuencias, verifica los
-conteos y se niega a ejecutarse si el destino ya tiene datos.
+## Anexo B: variables
 
-## Anexo B: referencia de variables
+**Backend:** `DATABASE_URL`, `JWT_SECRET`, `ADMIN_USER`, `ADMIN_PASS`, `CORS_ORIGIN`, `PORT`,
+`JWT_EXPIRES_IN`, `REFRESH_IDLE_HOURS`, `SESSION_MAX_DAYS`, `DB_POOL_MAX`, `DB_SSL`, `DB_SSL_CA`,
+`DB_SSL_CA_PATH`, `TRUST_PROXY`, `ZONA_HORARIA` (por defecto `America/Santiago`),
+`ORIGEN_DATABASE_URL` (solo migración).
 
-**Backend** (`backend/.env.example`): `DATABASE_URL`, `JWT_SECRET`, `ADMIN_USER`, `ADMIN_PASS`,
-`CORS_ORIGIN`, `PORT`, `JWT_EXPIRES_IN`, `REFRESH_IDLE_HOURS`, `SESSION_MAX_DAYS`, `DB_POOL_MAX`,
-`DB_SSL`, `DB_SSL_CA`, `DB_SSL_CA_PATH`, `TRUST_PROXY`, `ZONA_HORARIA` (por defecto
-`America/Santiago`), `ORIGEN_DATABASE_URL` (solo migración).
-
-**Frontend:** `REACT_APP_API_URL` (build). `frontend/.env.production` fija
-`INLINE_RUNTIME_CHUNK=false`, requerido por la política de seguridad de contenido.
+**Frontend:** `REACT_APP_API_URL` (build).
