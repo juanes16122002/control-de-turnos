@@ -72,7 +72,12 @@ CORS origin: https://control-de-turnos-mu.vercel.app
 ```bash
 curl https://control-de-turnos-backend.onrender.com/
 # → {"message":"API de Registro de Horarios","version":"1.0.0"}
+
+curl https://control-de-turnos-backend.onrender.com/salud     # incluye la base de datos
+# → {"estado":"ok","db":"ok","ms":5}      (503 {"estado":"error",...} si la base no responde)
 ```
+> El health check de Render usa `/` (no depende de la base) para no reiniciar el servicio en bucle
+> si Supabase estuviera pausado.
 
 ### 2.2 (Recomendado) Verificar el certificado SSL de Supabase
 1. Supabase → *Project Settings → Database → SSL Configuration* → **Download certificate**.
@@ -87,8 +92,11 @@ curl https://control-de-turnos-backend.onrender.com/
   `contabilidad-backend` (también gratuito). Si se agotan, Render suspende ambos servicios hasta el
   mes siguiente. Revisar el consumo en *Render → Billing*.
 - **Mantener despierto en horario de operación:** `backend/.github/workflows/mantener-activo.yml`
-  consulta el backend cada 10 min **solo de 9:00 a 2:59 hora de Chile** (~558 h/mes; deja ~190 h
+  consulta **`/salud`** cada 10 min **solo de 9:00 a 2:59 hora de Chile** (~558 h/mes; deja ~190 h
   para `contabilidad-backend`). Fuera de ese horario la primera petición tarda ~1 min.
+  - `/salud` ejecuta `SELECT 1` en la base: esa actividad diaria evita que **Supabase (plan
+    gratuito) pause el proyecto** tras ~7 días sin uso. Si la base no responde, la ejecución falla
+    y GitHub avisa por correo al dueño del repo.
   - Variables del repo backend (*Settings → Secrets and variables → Actions → Variables*):
     `BACKEND_URL` (configurada), `KEEPALIVE_INICIO` / `KEEPALIVE_FIN` (opcionales, por defecto 9 y 3).
   - Activa desde el 19-11-2026 (rama `main`). Se puede lanzar a mano en
@@ -152,6 +160,7 @@ En https://control-de-turnos-mu.vercel.app:
 | *Refused to connect … Content Security Policy* | `REACT_APP_API_URL` con `http://` | Usar `https://` y redesplegar Vercel |
 | El kiosco tarda ~1 min la primera vez | Render gratuito despertando | Normal (§2.3) |
 | Ambos backends de Render suspendidos | Se agotaron las 750 h del mes | Esperar al mes siguiente o plan pago |
+| `/salud` responde 503 / la app no carga datos | Supabase pausó el proyecto por inactividad | Supabase → proyecto → **Resume project** (datos intactos) |
 | `password authentication failed` | Corchetes / caracteres sin codificar en `DATABASE_URL` | Ver §2 |
 | `self-signed certificate in certificate chain` | `DB_SSL=verify` sin el CA correcto | Revisar `DB_SSL_CA` |
 | `ENETUNREACH` al conectar a la BD | Conexión *Direct* (IPv6) | Usar Session pooler |
@@ -172,6 +181,7 @@ En https://control-de-turnos-mu.vercel.app:
 - [ ] Revocar la API key de Render usada para el despliegue inicial (*Account Settings → API Keys*).
 - [ ] Verificación SSL del certificado de Supabase (§2.2).
 - [x] *Keep-alive* en horario de operación 9:00–3:00 (§2.3) — activo y verificado en GitHub Actions.
+- [x] Evitar la pausa de Supabase por inactividad: `/salud` + tarea programada (19-11-2026).
 - [ ] Revisar respaldos de Supabase.
 - [ ] Desarrollo local: `backend/.env` apunta a Supabase (producción); para desarrollar sin tocar
       datos reales: `docker compose -f docker-compose.yml -f docker-compose.local-db.yml up`.
